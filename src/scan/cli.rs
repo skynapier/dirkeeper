@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum OutputFormat {
+pub(crate) enum OutputFormat {
     Json,
     Jsonl,
 }

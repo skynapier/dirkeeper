@@ -22,6 +22,7 @@ dirkeeper resume --task-dir /data/tasks/t1
 dirkeeper status --task-dir /data/tasks/t1
 dirkeeper cleanup --task-dir /data/tasks/t1
 dirkeeper remote probe
+dirkeeper remote scan /data/library -R --format jsonl > library.jsonl
 dirkeeper remote plan --input /data/library/mapping.json --task-dir /data/tasks/t1
 dirkeeper remote apply --task-dir /data/tasks/t1
 dirkeeper remote resume --task-dir /data/tasks/t1
