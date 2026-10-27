@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="zh">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>dirkeeper architecture</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 2rem;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1, h2, h3 {
+            color: #222;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1.5rem;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 0.5rem;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f5f5f5;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 1rem;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        pre code {
+            background-color: transparent;
+            padding: 0;
+        }
+        ul, ol {
+            padding-left: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>dirkeeper architecture</h1>
+
+    <h2>1. 概述</h2>
+    <p>通用目录重定位工具。输入为 JSON 数组，包含 <code>{source, destination}</code> 绝对路径对。工具创建持久化任务目录以记录证据，支持断点恢复。</p>
+
+    <h2>scan</h2>
+    <p>目录分类子命令 <code>dirkeeper scan</code>。仅基于文件元数据和扩展名分类，不读取、移动或重命名任何文件内容。目录是分类的最小记录单位。不跟随符号链接；若根路径为符号链接，将被拒绝。</p>
+
+    <h3>CLI 选项</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>选项</th>
+                <th>说明</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>PATH</code></td>
+                <td>目标路径，默认为 <code>.</code>。除非指定 <code>-R</code> 或 <code>--max-depth</code>，否则仅扫描根目录（深度0）。</td>
+            </tr>
+            <tr>
+                <td><code>-a</code></td>
+                <td>包含隐藏文件和目录（以 <code>.</code> 开头）。</td>
+            </tr>
+            <tr>
+                <td><code>--scope</code></td>
+                <td><code>direct</code>（默认）仅统计直接文件；<code>subtree</code> 聚合所有后代文件，可将父目录分类为集合类型。</td>
+            </tr>
+            <tr>
+                <td><code>--max-depth</code></td>
+                <td>输出记录的最大深度限制。在 <code>subtree</code> 模式下，遍历会深入以计算计数，但仅输出符合深度限制的记录。</td>
+            </tr>
+            <tr>
+                <td><code>--type</code></td>
+                <td>可重复或逗号分隔，支持 <code>image</code>, <code>audio</code>, <code>video</code>, <code>software</code>, <code>other</code>, <code>mixed</code>, <code>empty</code>, <code>container</code>。</td>
+            </tr>
+            <tr>
+                <td><code>--exclude</code></td>
+                <td>可重复，绝对路径或相对于根的路径，用于剪枝子树。</td>
+            </tr>
+            <tr>
+                <td><code>--min-ratio</code></td>
+                <td>有限浮点数，范围 <code>[0.5, 1.0]</code>，默认 <code>0.5</code>。</td>
+            </tr>
+            <tr>
+                <td><code>--format</code></td>
+                <td><code>json</code>（默认数组）或 <code>jsonl</code>（每行一条记录）。</td>
+            </tr>
+            <tr>
+                <td><code>-o</code></td>
+                <td>输出文件路径。</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>分类逻辑</h3>
+    <ul>
+        <li><strong>计数基础</strong>：基于文件数量，而非字节大小。</li>
+        <li><strong>类型判定</strong>：
+            <ol>
+                <li>使用 <code>mime_guess</code> 根据扩展名判定 <code>image</code>, <code>audio</code>, <code>video</code>（优先级最高）。</li>
+                <li>检查软件扩展名或 Unix 可执行标志，判定为 <code>software</code>。</li>
+                <li>未知类型归为 <code>other</code>，并计入分母。</li>
+            </ol>
+        </li>
+        <li><strong>比例计算</strong>：最大类型计数 / 总文件数。</li>
+        <li><strong>最终分类</strong>：
+            <ul>
+                <li>若最大计数唯一且比例严格大于 <code>min_ratio</code>，则分类为该类型。</li>
+                <li>否则（包括平局情况）分类为 <code>mixed</code>。</li>
+                <li>若文件数为 0 且包含直接子目录，分类为 <code>container</code>。</li>
+                <li>若文件数为 0 且无子目录，分类为 <code>empty</code>。</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h3>输出规范</h3>
+    <ul>
+        <li><strong>JSON 格式</strong>：默认输出到 stdout，为 JSON 数组，非摘要信封。</li>
+        <li><strong>JSONL 格式</strong>：每完成一个目录，向 stdout 刷新一条记录。</li>
+        <li><strong>顺序</strong>：两种格式均遵循“子目录先于父目录，根目录最后”的顺序。</li>
+        <li><strong>文件输出 (<code>-o</code>)</strong>：
+            <ul>
+                <li>扫描完成后原子性写入最终报告，非实时流式写入。</li>
+                <li>现有报告文件会被排除在扫描之外。</li>
+                <li>若发生致命错误，现有报告保持不变。</li>
+                <li>输出文件的父目录必须存在。</li>
+                <li>部分扫描结果可能会替换现有报告。</li>
+            </ul>
+        </li>
+        <li><strong>流分离</strong>：stdout 仅包含结构化数据，诊断信息输出到 stderr。</li>
+    </ul>
+
+    <h3>记录字段</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>字段</th>
+                <th>说明</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>path</code></td>
+                <td>绝对规范化路径字符串。</td>
+            </tr>
+            <tr>
+                <td><code>relative_path</code></td>
+                <td>相对于根的路径，根目录为空字符串。</td>
+            </tr>
+            <tr>
+                <td><code>depth</code></td>
+                <td>深度，根目录为 0。</td>
+            </tr>
+            <tr>
+                <td><code>kind</code></td>
+                <td>小写字符串，如 <code>image</code>, <code>mixed</code> 等。</td>
+            </tr>
+            <tr>
+                <td><code>counts</code></td>
+                <td>对象，包含 <code>image</code>, <code>audio</code>, <code>video</code>, <code>software</code>, <code>other</code> 计数。</td>
+            </tr>
+            <tr>
+                <td><code>ratio</code></td>
+                <td>最大计数/总数，空目录为 0。</td>
+            </tr>
+            <tr>
+                <td><code>child_dirs</code></td>
+                <td>直接包含的子目录数量。</td>
+            </tr>
+            <tr>
+                <td><code>complete</code></td>
+                <td>布尔值。在 <code>direct</code> 模式下，若直接子项有本地错误则为 <code>false</code>；在 <code>subtree</code> 模式下，后代错误会传播导致父目录 <code>complete</code> 为 <code>false</code>。</td>
+            </tr>
+            <tr>
+                <td><code>issues</code></td>
+                <td>数组，包含 <code>path</code> 和 <code>message</code>。本地错误详情可能保留在后代记录中，即使父目录 <code>complete</code> 为 <code>false</code>。</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>退出码</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>退出码</th>
+                <th>说明</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>0</code></td>
+                <td>扫描完成且无错误，或 stdout 发生 BrokenPipe。</td>
+            </tr>
+            <tr>
+                <td><code>2</code></td>
+                <td>部分遍历完成（存在错误）或 clap 用法错误。不要假设退出码 2 时 stdout 总是可解析的 JSON；应先检查 stderr，然后检查 <code>complete</code> 和 <code>issues</code> 字段，保留可用的部分记录。过滤选项可能会隐藏错误记录，但退出码仍为 2。</td>
+            </tr>
+            <tr>
+                <td><code>1</code></td>
+                <td>致命错误，包括根路径无效、选项错误（如 <code>min_ratio</code> 超出范围）或输出失败。</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h2>2. 命令</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>命令</th>
+                <th>参数与行为</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>plan</code></td>
+                <td>
+                    <ul>
+                        <li><code>--input</code>: 映射 JSON 文件路径。</li>
+                        <li><code>--task-dir</code>: 新的绝对路径目录，不得位于 source/dest/cleanup 根目录内。</li>
+                        <li><code>--cleanup-root</code>: 可重复，指定清理根目录。</li>
+                        <li><code>--limit</code>: 限制检查数量。</li>
+                        <li><code>--resolve-existing</code>: 处理已存在目标。</li>
+                    </ul>
+                    <p>目标父目录必须存在；目标必须不存在，除非通过 <code>--resolve-existing</code> 解决。</p>
+                </td>
+            </tr>
+            <tr>
+                <td><code>apply</code></td>
+                <td>
+                    <ul>
+                        <li><code>--task-dir</code>: 任务目录。</li>
+                        <li><code>--max-items</code>: 最大处理项数。</li>
+                    </ul>
+                </td>
+            </tr>
+            <tr>
+                <td><code>resume</code></td>
+                <td>
+                    <ul>
+                        <li>参数同 <code>apply</code>。</li>
+                        <li>重新验证实际内容。</li>
+                        <li>跳过已验证完成的项。</li>
+                        <li>重启已证明拥有的 staging。</li>
+                        <li>验证已发布目标后继续删除 source。</li>
+                    </ul>
+                </td>
+            </tr>
+            <tr>
+                <td><code>status</code></td>
+                <td>显示任务状态。</td>
+            </tr>
+            <tr>
+                <td><code>cleanup</code></td>
+                <td>仅删除已证明拥有的 staging（当 source 匹配且 target 不存在时），以及有界的空祖先目录。</td>
+            </tr>
+            <tr>
+                <td><code>remote</code></td>
+                <td>
+                    <ul>
+                        <li>在主机 <code>--host</code> 上通过 <code>/usr/bin/ssh</code> 运行相同子命令。</li>
+                        <li><code>--remote-bin</code> 指定远程二进制路径。</li>
+                        <li><code>probe</code> 打印 <code>uname -m</code>、内核版本、<code>$HOME</code>。</li>
+                    </ul>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h2>3. 任务目录</h2>
+    <ul>
+        <li><code>plan.json</code>: 不可变，哈希校验，版本 2。</li>
+        <li><code>journal.jsonl</code>: 追加写入，fsync，独占 flock。</li>
+        <li><code>evidence/NNNNNN.json</code>: 每个文件的 BLAKE3 哈希及目录结构。</li>
+        <li><code>summary.json</code>: 总计/完成/待处理/冲突/错误。</li>
+        <li><code>lock</code>: 锁文件。</li>
+    </ul>
+
+    <h2>4. Staging</h2>
+    <p>Staging 位于目标同级目录，命名为 <code>&lt;dst parent&gt;/.dirplace-&lt;task id&gt;-&lt;index:06&gt;.staging</code>，因为发布操作是同文件系统 rename。该前缀沿用旧名，以兼容已有任务。</p>
+
+    <h2>5. 单项流程</h2>
+    <ol>
+        <li><strong>快速路径</strong>：原生无替换 rename（macOS 使用 <code>renamex_np RENAME_EXCL</code>，Linux 使用 <code>renameat2 RENAME_NOREPLACE</code>），随后验证目标 manifest。</li>
+        <li><strong>否则</strong>：
+            <ol type="a">
+                <li>复制到 staging。</li>
+                <li>验证 BLAKE3 manifest 与 evidence 一致。</li>
+                <li>重新检查 source 未变。</li>
+                <li>原子无替换发布 staging 到 destination。</li>
+                <li>安全删除：验证 destination，重新验证 source，在第一个 unlink 前记录 journal <code>deleting</code>，从最深目录开始删除并重新哈希每个文件，移除 source 根目录。</li>
+                <li>记录 <code>completed</code>。</li>
+                <li>移除严格位于 cleanup roots 下方的空祖先目录。</li>
+            </ol>
+        </li>
+    </ol>
+    <p>Journal 阶段：<code>copying</code>, <code>verified</code>, <code>published</code>, <code>deleting</code>, <code>completed</code>, <code>conflict</code>, <code>error</code>。</p>
+    <p>来自 <code>--resolve-existing</code> 的重复/合并/版本项通过合并路径处理，按文件发布。</p>
+
+    <h2>6. 冲突与安全</h2>
+    <ul>
+        <li>严禁覆盖。</li>
+        <li>拒绝符号链接、特殊文件、非 UTF-8 路径。</li>
+        <li>拒绝 source/destination 重叠。</li>
+        <li><code>copied_source_changed</code> 保留两者供手动协调。</li>
+        <li>Apply 重新验证整个未完成集合，不信任已编辑的 ready 状态。</li>
+    </ul>
+
+    <h2>7. NAS 兼容</h2>
+    <ul>
+        <li>目录 fsync 返回 ENOTSUP 时容忍并警告一次（文件 fsync、哈希校验和 journal fsync 仍严格，因此掉电持久性受限）。</li>
+        <li>当 <code>RENAME_EXCL</code> 返回 ENOTSUP 时，回退为独占创建空 destination 并 POSIX rename 到该空目录，绝不替换非空 destination。</li>
+        <li>mkdir 后中断可能留下空 reservation，保留供审查。</li>
+        <li>创建 staging 后、记录 <code>copying</code> 前崩溃可能留下无法证明归属的 staging，保留供人工审查。</li>
+    </ul>
+
+    <h2>8. Remote SSH</h2>
+    <ul>
+        <li>配置：<code>StrictHostKeyChecking=yes</code>, <code>ConnectTimeout=15</code>, <code>ServerAlive*</code>, <code>-T</code>。</li>
+        <li>默认密钥认证，<code>BatchMode=yes</code>。</li>
+        <li>使用 <code>--keychain-service</code> 和 <code>--keychain-account</code> 时强制密码认证，作为自身的 <code>SSH_ASKPASS</code>，通过 <code>security find-generic-password</code> 读取密码（绝不在命令行上）。</li>
+        <li>参数单引号包裹，由远程登录 shell 非交互式执行，因此 <code>--remote-bin</code> 应为绝对路径。</li>
+        <li><code>plan</code> 通过 stdin 流式传输本地输入文件作为 <code>--input -</code>。</li>
+    </ul>
+
+    <h3>配置</h3>
+    <p>仅 <code>dirkeeper remote</code> 读取配置；本地命令（<code>scan</code>、<code>plan</code>、<code>apply</code> 等）不读取。</p>
+    <p>优先级（从高到低）：</p>
+    <ol>
+        <li>CLI 标志：<code>--host</code> / <code>--remote-bin</code> / <code>--keychain-service</code> / <code>--keychain-account</code></li>
+        <li>环境变量：<code>DIRKEEPER_REMOTE_HOST</code>、<code>DIRKEEPER_REMOTE_BIN</code>、<code>DIRKEEPER_REMOTE_KEYCHAIN_SERVICE</code>、<code>DIRKEEPER_REMOTE_KEYCHAIN_ACCOUNT</code>（空值视为未设置）</li>
+        <li>TOML 配置文件</li>
+    </ol>
+    <p>每个值取自最高优先级层中设置的值。</p>
+    <p>配置文件位置（按顺序查找）：</p>
+    <ol>
+        <li><code>DIRKEEPER_CONFIG</code>（若设置）</li>
+        <li><code>$XDG_CONFIG_HOME/dirkeeper/config.toml</code></li>
+        <li><code>~/.config/dirkeeper/config.toml</code></li>
+    </ol>
+    <p>文件缺失不报错；不可读、TOML 无效或包含未知键则报错。</p>
+    <pre><code>[remote]
+host = "nas"
+bin = "dirkeeper"
+    # 可选，两者同时设置或同时省略：
+    # keychain_service = "&lt;service&gt;"
+    # keychain_account = "&lt;account&gt;"</code></pre>
+    <p>规则：</p>
+    <ul>
+        <li><code>host</code> 和 <code>bin</code> 在合并后为必填项（错误信息中指明对应的 CLI 标志、环境变量和配置键）。</li>
+        <li><code>keychain_service</code> 和 <code>keychain_account</code> 必须同时设置或同时省略。</li>
+    </ul>
+
+    <h2>9. 清理规则</h2>
+    <ul>
+        <li>仅删除严格位于给定根目录下方的空祖先目录。</li>
+        <li>根目录保留。</li>
+        <li>永不删除 <code>#recycle</code> 或无关文件。</li>
+        <li>Evidence 保留，非垃圾。</li>
+    </ul>
+</body>
+</html>
