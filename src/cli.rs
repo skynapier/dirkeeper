@@ -36,6 +36,9 @@ enum Commands {
         /// Resolve existing destination conflicts
         #[arg(long)]
         resolve_existing: bool,
+        /// Create a missing destination parent (one level) during apply
+        #[arg(long)]
+        create_parents: bool,
     },
     /// Apply moves from plan
     Apply {
@@ -95,6 +98,7 @@ pub(crate) fn run() -> ExitCode {
             cleanup_root,
             limit,
             resolve_existing,
+            create_parents,
         } => {
             let limit_val = limit.unwrap_or(0);
             if limit.is_some() && limit_val == 0 {
@@ -112,6 +116,7 @@ pub(crate) fn run() -> ExitCode {
                 &cleanup_root,
                 limit_opt,
                 resolve_existing,
+                create_parents,
             ) {
                 Ok(summary) => print_summary(&summary),
                 Err(e) => {

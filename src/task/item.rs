@@ -32,6 +32,8 @@ pub(crate) fn perform(store: &mut TaskStore, index: usize) -> Result<(), MoveErr
     let stage_path = store.staging(index);
     let stage = last_meaningful_stage(store, index);
 
+    crate::task::parent::ensure_parent(store, index)?;
+
     // Detect symlink/non-directory for source, dest, stage
     check_path_is_dir_or_absent(&src, "source")?;
     check_path_is_dir_or_absent(&dst, "destination")?;
@@ -613,7 +615,7 @@ fn last_meaningful_stage(store: &TaskStore, index: usize) -> Option<Stage> {
         .events
         .iter()
         .rev()
-        .find(|e| e.index == index && !e.stage.is_failure())
+        .find(|e| e.index == index && !e.stage.is_failure() && e.stage != Stage::ParentCreated)
         .map(|e| e.stage)
 }
 

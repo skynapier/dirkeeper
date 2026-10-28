@@ -21,6 +21,9 @@ pub(crate) struct PlanMove {
     pub(crate) status: MoveStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
+    /// The destination parent is absent at plan time and apply creates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) create_parent: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reconciliation: Option<crate::task::reconcile::Reconciliation>,
 }

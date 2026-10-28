@@ -3,6 +3,7 @@ pub(crate) mod fast_move;
 pub(crate) mod item;
 pub(crate) mod merge_move;
 pub(crate) mod model;
+pub(crate) mod parent;
 pub(crate) mod reconcile;
 pub(crate) mod store;
 pub(crate) mod validate;

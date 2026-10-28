@@ -91,7 +91,7 @@ fn build_summary(store: &TaskStore) -> Result<TaskSummary, String> {
 /// 3. Optionally truncate the spec list to `limit` entries.
 /// 4. Validate every cleanup root via `planning::validate_cleanup_root`.
 /// 5. Reject any cleanup root that overlaps any destination.
-/// 6. Build a v2 TaskPlan with a deterministic id from `task_store::plan_id`.
+/// 6. Build a v2 TaskPlan with a deterministic id from `task_store::plan_id` (generate_plan with create_parents).
 /// 7. Create the task directory via `TaskStore::create` (returns a held lock).
 /// 8. Run `validate_task` on the freshly created store.
 /// 9. Write the initial summary and return it.
@@ -103,6 +103,7 @@ pub(crate) fn prepare(
     cleanup_roots: &[PathBuf],
     limit: Option<usize>,
     resolve_existing: bool,
+    create_parents: bool,
 ) -> Result<TaskSummary, String> {
     // 1. Read and parse the JSON spec file (or stdin if input is "-").
     let specs: Vec<MoveSpec> = if input == Path::new("-") {
@@ -147,7 +148,7 @@ pub(crate) fn prepare(
 
     // 6. Build a v2 TaskPlan.
     //    Use planning::generate_plan to classify each move as ready/conflict.
-    let plan_v1 = generate_plan(&specs);
+    let plan_v1 = generate_plan(&specs, create_parents);
     let mut moves: Vec<PlanMove> = plan_v1.moves;
 
     // 6a. If resolve_existing is enabled, reconcile moves before plan creation.

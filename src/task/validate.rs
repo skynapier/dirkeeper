@@ -111,19 +111,43 @@ pub(crate) fn validate_task(store: &TaskStore) -> Result<(), String> {
         let dst_parent = dst
             .parent()
             .ok_or_else(|| format!("Move {}: destination has no parent", i))?;
-        let parent_meta = std::fs::symlink_metadata(dst_parent)
-            .map_err(|e| format!("Move {}: cannot stat dest parent: {}", i, e))?;
-        if parent_meta.file_type().is_symlink() {
-            return Err(format!("Move {}: dest parent is a symlink", i));
-        }
-        if !parent_meta.is_dir() {
-            return Err(format!("Move {}: dest parent is not a directory", i));
-        }
-        let parent_canon = dst_parent
-            .canonicalize()
-            .map_err(|e| format!("Move {}: cannot canonicalize dest parent: {}", i, e))?;
-        if parent_canon != dst_parent {
-            return Err(format!("Move {}: dest parent is not canonical", i));
+        match std::fs::symlink_metadata(dst_parent) {
+            Ok(parent_meta) => {
+                if parent_meta.file_type().is_symlink() {
+                    return Err(format!("Move {}: dest parent is a symlink", i));
+                }
+                if !parent_meta.is_dir() {
+                    return Err(format!("Move {}: dest parent is not a directory", i));
+                }
+                let parent_canon = dst_parent
+                    .canonicalize()
+                    .map_err(|e| format!("Move {}: cannot canonicalize dest parent: {}", i, e))?;
+                if parent_canon != dst_parent {
+                    return Err(format!("Move {}: dest parent is not canonical", i));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if moves[i].create_parent {
+                    let grandparent = dst_parent
+                        .parent()
+                        .ok_or_else(|| format!("Move {}: dest parent has no grandparent", i))?;
+                    let gp_meta = std::fs::symlink_metadata(grandparent)
+                        .map_err(|e| format!("Move {}: cannot stat dest grandparent: {}", i, e))?;
+                    if gp_meta.file_type().is_symlink() {
+                        return Err(format!("Move {}: dest grandparent is a symlink", i));
+                    }
+                    if !gp_meta.is_dir() {
+                        return Err(format!("Move {}: dest grandparent is not a directory", i));
+                    }
+                    let gp_canon = grandparent.canonicalize().map_err(|e| {
+                        format!("Move {}: cannot canonicalize dest grandparent: {}", i, e)
+                    })?;
+                    if gp_canon != grandparent {
+                        return Err(format!("Move {}: dest grandparent is not canonical", i));
+                    }
+                }
+            }
+            Err(e) => return Err(format!("Move {}: cannot stat dest parent: {}", i, e)),
         }
     }
 

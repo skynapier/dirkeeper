@@ -24,7 +24,7 @@ pub(crate) fn lexical_path_problem(p: &Path, is_source: bool) -> Option<String> 
 
 /// Full validation of a single move spec against the filesystem. Returns
 /// `Some(reason)` when the move is invalid.
-pub(crate) fn validate_move(src: &Path, dst: &Path) -> Option<String> {
+pub(crate) fn validate_move(src: &Path, dst: &Path, create_parents: bool) -> Option<String> {
     if let Some(r) = lexical_path_problem(src, true) {
         return Some(r);
     }
@@ -58,18 +58,26 @@ pub(crate) fn validate_move(src: &Path, dst: &Path) -> Option<String> {
         Some(p) => p,
         None => return Some("Destination has no parent".to_string()),
     };
-    let parent_meta = match dst_parent.symlink_metadata() {
-        Ok(m) => m,
-        Err(_) => return Some("Destination parent does not exist".to_string()),
-    };
-    if parent_meta.file_type().is_symlink() {
-        return Some("Destination parent is a symlink".to_string());
+    if dst_parent.symlink_metadata().is_err() {
+        // Parent is absent. If create_parents is enabled, validate the grandparent
+        // instead and allow the move (apply will create the parent).
+        if create_parents {
+            let grandparent = match dst_parent.parent() {
+                Some(p) => p,
+                None => return Some("Destination parent does not exist".to_string()),
+            };
+            if let Some(problem) = existing_dir_problem(grandparent, "Destination grandparent") {
+                return Some(problem);
+            }
+            return None;
+        }
+        return Some("Destination parent does not exist".to_string());
     }
-    if !parent_meta.is_dir() {
-        return Some("Destination parent is not a directory".to_string());
+    if let Some(problem) = existing_dir_problem(dst_parent, "Destination parent") {
+        return Some(problem);
     }
-    // Canonical source and destination parent must match the requested lexical
-    // paths, rejecting symlink ancestors.
+    // Canonical source must match the requested lexical path, rejecting symlink
+    // ancestors.
     let src_canon = match src.canonicalize() {
         Ok(c) => c,
         Err(_) => return Some("Source cannot be canonicalized".to_string()),
@@ -77,12 +85,28 @@ pub(crate) fn validate_move(src: &Path, dst: &Path) -> Option<String> {
     if src_canon != src {
         return Some("Source path is not canonical (symlink ancestor)".to_string());
     }
-    let parent_canon = match dst_parent.canonicalize() {
-        Ok(c) => c,
-        Err(_) => return Some("Destination parent cannot be canonicalized".to_string()),
+    None
+}
+
+/// Check that a directory exists, is not a symlink, and is canonical.
+/// Returns `Some(reason)` if any check fails.
+fn existing_dir_problem(dir: &Path, label: &str) -> Option<String> {
+    let meta = match dir.symlink_metadata() {
+        Ok(m) => m,
+        Err(_) => return Some(format!("{} does not exist", label)),
     };
-    if parent_canon != dst_parent {
-        return Some("Destination parent is not canonical (symlink ancestor)".to_string());
+    if meta.file_type().is_symlink() {
+        return Some(format!("{} is a symlink", label));
+    }
+    if !meta.is_dir() {
+        return Some(format!("{} is not a directory", label));
+    }
+    let canon = match dir.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return Some(format!("{} cannot be canonicalized", label)),
+    };
+    if canon != dir {
+        return Some(format!("{} is not canonical (symlink ancestor)", label));
     }
     None
 }
@@ -94,13 +118,16 @@ pub(crate) fn paths_overlap(a: &Path, b: &Path) -> bool {
 
 /// Global validation over a set of moves. Returns a reason vector indexed by
 /// move position; `None` means the move is ready.
-pub(crate) fn validate_moves(moves: &[(PathBuf, PathBuf)]) -> Vec<Option<String>> {
+pub(crate) fn validate_moves(
+    moves: &[(PathBuf, PathBuf)],
+    create_parents: bool,
+) -> Vec<Option<String>> {
     let n = moves.len();
     let mut reasons: Vec<Option<String>> = vec![None; n];
 
     // Per-move validation.
     for i in 0..n {
-        if let Some(r) = validate_move(&moves[i].0, &moves[i].1) {
+        if let Some(r) = validate_move(&moves[i].0, &moves[i].1, create_parents) {
             reasons[i] = Some(r);
         }
     }
@@ -129,12 +156,12 @@ pub(crate) fn validate_moves(moves: &[(PathBuf, PathBuf)]) -> Vec<Option<String>
     reasons
 }
 
-pub(crate) fn generate_plan(specs: &[MoveSpec]) -> Plan {
+pub(crate) fn generate_plan(specs: &[MoveSpec], create_parents: bool) -> Plan {
     let moves: Vec<(PathBuf, PathBuf)> = specs
         .iter()
         .map(|s| (PathBuf::from(&s.source), PathBuf::from(&s.destination)))
         .collect();
-    let reasons = validate_moves(&moves);
+    let reasons = validate_moves(&moves, create_parents);
 
     let plan_moves = specs
         .iter()
@@ -146,11 +173,18 @@ pub(crate) fn generate_plan(specs: &[MoveSpec]) -> Plan {
             } else {
                 MoveStatus::Ready
             };
+            let dst = PathBuf::from(&spec.destination);
+            let dst_parent_absent = dst
+                .parent()
+                .map(|p| p.symlink_metadata().is_err())
+                .unwrap_or(false);
+            let create_parent = reason.is_none() && create_parents && dst_parent_absent;
             PlanMove {
                 source: spec.source.clone(),
                 destination: spec.destination.clone(),
                 status,
                 reason,
+                create_parent,
                 reconciliation: None,
             }
         })
@@ -192,4 +226,82 @@ pub(crate) fn validate_cleanup_root(root: &Path) -> Result<PathBuf, String> {
         return Err("Cleanup root is not canonical".to_string());
     }
     Ok(canon)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_missing_parent_without_flag_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(&tmp).unwrap();
+        let src = base.join("src");
+        fs::create_dir(&src).unwrap();
+        let dst = base.join("new_parent/dest");
+
+        let result = validate_move(&src, &dst, false);
+        assert_eq!(
+            result,
+            Some("Destination parent does not exist".to_string())
+        );
+    }
+
+    #[test]
+    fn test_missing_parent_with_flag_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(&tmp).unwrap();
+        let src = base.join("src");
+        fs::create_dir(&src).unwrap();
+        let dst = base.join("new_parent/dest");
+
+        let result = validate_move(&src, &dst, true);
+        assert_eq!(result, None);
+
+        let spec = MoveSpec {
+            source: src.to_string_lossy().to_string(),
+            destination: dst.to_string_lossy().to_string(),
+        };
+        let plan = generate_plan(&[spec], true);
+        assert_eq!(plan.moves[0].status, MoveStatus::Ready);
+        assert!(plan.moves[0].create_parent);
+    }
+
+    #[test]
+    fn test_missing_grandparent_with_flag_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(&tmp).unwrap();
+        let src = base.join("src");
+        fs::create_dir(&src).unwrap();
+        let dst = base.join("a/b/dest");
+
+        let result = validate_move(&src, &dst, true);
+        assert_eq!(
+            result,
+            Some("Destination grandparent does not exist".to_string())
+        );
+    }
+
+    #[test]
+    fn test_existing_parent_with_flag_ready_no_create() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(&tmp).unwrap();
+        let src = base.join("src");
+        fs::create_dir(&src).unwrap();
+        let parent = base.join("existing_parent");
+        fs::create_dir(&parent).unwrap();
+        let dst = parent.join("dest");
+
+        let result = validate_move(&src, &dst, true);
+        assert_eq!(result, None);
+
+        let spec = MoveSpec {
+            source: src.to_string_lossy().to_string(),
+            destination: dst.to_string_lossy().to_string(),
+        };
+        let plan = generate_plan(&[spec], true);
+        assert_eq!(plan.moves[0].status, MoveStatus::Ready);
+        assert!(!plan.moves[0].create_parent);
+    }
 }

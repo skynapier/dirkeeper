@@ -17,6 +17,7 @@ The binary is `target/release/dirkeeper`.
 ~~~sh
 dirkeeper scan /data/library -R --format jsonl
 dirkeeper plan --input /data/library/mapping.json --task-dir /data/tasks/t1
+dirkeeper plan --input /data/library/mapping.json --task-dir /data/tasks/t1 --create-parents
 dirkeeper apply --task-dir /data/tasks/t1
 dirkeeper resume --task-dir /data/tasks/t1
 dirkeeper status --task-dir /data/tasks/t1

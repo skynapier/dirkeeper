@@ -19,6 +19,8 @@ pub(crate) enum Stage {
     Cleaned,
     Renaming,
     Merging,
+    #[serde(rename = "parent_created")]
+    ParentCreated,
 }
 
 impl Stage {
@@ -41,6 +43,7 @@ impl std::fmt::Display for Stage {
             Stage::Cleaned => "cleaned",
             Stage::Renaming => "renaming",
             Stage::Merging => "merging",
+            Stage::ParentCreated => "parent_created",
         };
         write!(f, "{}", name)
     }

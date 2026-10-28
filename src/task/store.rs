@@ -511,7 +511,12 @@ impl TaskStore {
         self.events
             .iter()
             .rev()
-            .find(|e| e.index == index && !e.stage.is_failure() && e.stage != Stage::Cleaned)
+            .find(|e| {
+                e.index == index
+                    && !e.stage.is_failure()
+                    && e.stage != Stage::Cleaned
+                    && e.stage != Stage::ParentCreated
+            })
             .map(|e| e.stage)
     }
 

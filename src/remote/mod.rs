@@ -103,6 +103,9 @@ pub(crate) enum RemoteCommands {
         /// Resolve existing destination conflicts
         #[arg(long)]
         resolve_existing: bool,
+        /// Create a missing destination parent (one level) during apply
+        #[arg(long)]
+        create_parents: bool,
     },
     /// Apply moves
     Apply {
@@ -292,6 +295,7 @@ fn build_plan(
     cleanup_root: &[String],
     limit: Option<usize>,
     resolve_existing: bool,
+    create_parents: bool,
 ) -> Result<RemoteCall, RemoteError> {
     validate_local_input(input)?;
     validate_remote_path(task_dir).map_err(RemoteError::InvalidTaskDir)?;
@@ -318,11 +322,15 @@ fn build_plan(
     let resolve_args = resolve_existing
         .then(|| "--resolve-existing".to_string())
         .into_iter();
+    let create_parents_args = create_parents
+        .then(|| "--create-parents".to_string())
+        .into_iter();
     let argv = base
         .into_iter()
         .chain(roots)
         .chain(limit_args)
         .chain(resolve_args)
+        .chain(create_parents_args)
         .collect();
     Ok(RemoteCall {
         argv,
@@ -379,6 +387,7 @@ fn build_call(command: RemoteCommands, bin: &str) -> Result<RemoteCall, RemoteEr
             cleanup_root,
             limit,
             resolve_existing,
+            create_parents,
         } => build_plan(
             bin,
             &input,
@@ -386,6 +395,7 @@ fn build_call(command: RemoteCommands, bin: &str) -> Result<RemoteCall, RemoteEr
             &cleanup_root,
             limit,
             resolve_existing,
+            create_parents,
         ),
         RemoteCommands::Apply {
             task_dir,
@@ -578,5 +588,14 @@ mod tests {
             build_scan("dirkeeper", &args),
             Err(RemoteError::InvalidExclude(_))
         ));
+    }
+
+    #[test]
+    fn test_build_plan_create_parents_forwarded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("input.json");
+        std::fs::write(&input, "[]").unwrap();
+        let call = build_plan("dirkeeper", &input, "/vol/task", &[], None, false, true).unwrap();
+        assert!(call.argv.contains(&"--create-parents".to_string()));
     }
 }

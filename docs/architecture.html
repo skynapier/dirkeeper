@@ -238,8 +238,9 @@
                         <li><code>--cleanup-root</code>: 可重复，指定清理根目录。</li>
                         <li><code>--limit</code>: 限制检查数量。</li>
                         <li><code>--resolve-existing</code>: 处理已存在目标。</li>
+                        <li><code>--create-parents</code>: 允许目标父目录缺失一层，apply 时创建。</li>
                     </ul>
-                    <p>目标父目录必须存在；目标必须不存在，除非通过 <code>--resolve-existing</code> 解决。</p>
+                    <p>目标父目录必须存在（使用 <code>--create-parents</code> 时可缺失一层，其上一级须为已存在的规范目录）；目标必须不存在，除非通过 <code>--resolve-existing</code> 解决。</p>
                 </td>
             </tr>
             <tr>
@@ -299,6 +300,7 @@
 
     <h2>5. 单项流程</h2>
     <ol>
+        <li><strong>创建父目录</strong>：计划标记 <code>create_parent</code> 且父目录不存在时，先 <code>mkdir</code> 父目录、fsync 上一级目录，并记录 journal <code>parent_created</code>；已存在的父目录经非 symlink、规范路径检查后复用；该目录在后续失败时保留。</li>
         <li><strong>快速路径</strong>：原生无替换 rename（macOS 使用 <code>renamex_np RENAME_EXCL</code>，Linux 使用 <code>renameat2 RENAME_NOREPLACE</code>），随后验证目标 manifest。</li>
         <li><strong>否则</strong>：
             <ol type="a">
@@ -312,7 +314,7 @@
             </ol>
         </li>
     </ol>
-    <p>Journal 阶段：<code>copying</code>, <code>verified</code>, <code>published</code>, <code>deleting</code>, <code>completed</code>, <code>conflict</code>, <code>error</code>。</p>
+    <p>Journal 阶段：<code>copying</code>, <code>verified</code>, <code>published</code>, <code>deleting</code>, <code>completed</code>, <code>conflict</code>, <code>error</code>；<code>parent_created</code> 只是日志记录，不是阶段。</p>
     <p>来自 <code>--resolve-existing</code> 的重复/合并/版本项通过合并路径处理，按文件发布。</p>
 
     <h2>6. 冲突与安全</h2>
