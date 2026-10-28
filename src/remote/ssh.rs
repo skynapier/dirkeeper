@@ -227,9 +227,22 @@ fn askpass() -> Option<()> {
     std::io::stdout().write_all(&buf).ok()
 }
 
-/// Entry point for the askpass helper; `None` unless invoked as such.
+/// True when `args` has exactly 2 items (program + one argument) and that
+/// argument contains whitespace or `:`.
+fn is_askpass_call(args: &[String]) -> bool {
+    match args.len() {
+        2 => args[1].chars().any(|c| c.is_whitespace() || c == ':'),
+        _ => false,
+    }
+}
+
+/// Entry point for the askpass helper; `None` unless both
+/// `DIRKEEPER_SSH_ASKPASS=1` and the argv looks like an ssh askpass call.
 pub(crate) fn maybe_askpass() -> Option<ExitCode> {
     if std::env::var_os("DIRKEEPER_SSH_ASKPASS") != Some("1".into()) {
+        return None;
+    }
+    if !is_askpass_call(&std::env::args().collect::<Vec<_>>()) {
         return None;
     }
     Some(askpass().map_or(ExitCode::from(1), |_| ExitCode::SUCCESS))
@@ -294,5 +307,33 @@ mod tests {
             "Are you sure you want to continue connecting (yes/no/[fingerprint])? "
         ));
         assert!(!is_password_prompt(""));
+    }
+
+    #[test]
+    fn test_is_askpass_call() {
+        assert!(is_askpass_call(&[
+            "dirkeeper".to_string(),
+            "user@host's password: ".to_string(),
+        ]));
+        assert!(is_askpass_call(&[
+            "dirkeeper".to_string(),
+            "Password:".to_string(),
+        ]));
+        assert!(!is_askpass_call(&[
+            "dirkeeper".to_string(),
+            "remote".to_string(),
+            "plan".to_string(),
+            "--input".to_string(),
+            "x".to_string(),
+        ]));
+        assert!(!is_askpass_call(&[
+            "dirkeeper".to_string(),
+            "remote".to_string(),
+        ]));
+        assert!(!is_askpass_call(&[
+            "dirkeeper".to_string(),
+            "--help".to_string(),
+        ]));
+        assert!(!is_askpass_call(&["dirkeeper".to_string()]));
     }
 }
